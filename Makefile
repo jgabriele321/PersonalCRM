@@ -1,6 +1,6 @@
 # Personal CRM Makefile
 
-.PHONY: help dev build test clean docker-up docker-down docker-reset test-cadence-ultra test-cadence-fast prod staging testing start stop restart status
+.PHONY: help dev build test clean docker-up docker-down docker-reset test-cadence-ultra test-cadence-fast prod staging testing start stop restart status dev-stop dev-restart dev-api-stop dev-api-start dev-api-restart install-daemon uninstall-daemon daemon-status daemon-logs
 
 # Default target
 help:
@@ -31,6 +31,12 @@ help:
 	@echo "Cadence Testing:"
 	@echo "  test-cadence-ultra - Test all cadences in minutes (testing env)"
 	@echo "  test-cadence-fast  - Test all cadences in hours (staging env)"
+	@echo ""
+	@echo "Daemon Management:"
+	@echo "  install-daemon   - Install backend as macOS LaunchAgent (runs independently)"
+	@echo "  uninstall-daemon - Uninstall LaunchAgent"
+	@echo "  daemon-status   - Check daemon status"
+	@echo "  daemon-logs     - View daemon logs"
 
 # Development
 dev:
@@ -40,6 +46,44 @@ dev:
 	@set -a && source ./.env && set +a && export DATABASE_URL="postgres://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@localhost:$${POSTGRES_PORT:-5432}/$${POSTGRES_DB}?sslmode=disable" && cd backend && go run cmd/crm-api/main.go &
 	@echo "Starting frontend development server..."
 	@cd frontend && npm run dev
+
+# Development helpers
+dev-stop:
+	@echo "Stopping development servers (backend and frontend dev)..."
+	@pkill -f crm-api || true
+	@pkill -f "next dev" || true
+	@echo "✅ Dev servers stopped (if they were running)"
+
+dev-restart:
+	@echo "🔄 Restarting development environment..."
+	@make dev-stop
+	@sleep 1
+	@make dev
+
+dev-api-stop:
+	@echo "Stopping backend dev server..."
+	@pkill -f crm-api || true
+	@# Wait briefly for port 8080 to be released
+	@for i in 1 2 3 4 5; do \
+	  if lsof -ti tcp:8080 >/dev/null 2>&1; then \
+	    sleep 0.4; \
+	  else \
+	    break; \
+	  fi; \
+	done
+	@echo "✅ Backend dev server stopped (if it was running) and port freed"
+
+dev-api-start:
+	@echo "Starting backend dev server..."
+	@make docker-up
+	@set -a && source ./.env && set +a && export DATABASE_URL="postgres://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@localhost:$${POSTGRES_PORT:-5432}/$${POSTGRES_DB}?sslmode=disable" && cd backend && go run cmd/crm-api/main.go &
+	@echo "✅ Backend dev server started"
+
+dev-api-restart:
+	@echo "🔄 Restarting backend dev server..."
+	@make dev-api-stop
+	@sleep 1
+	@make dev-api-start
 
 # Build
 build:
@@ -214,3 +258,82 @@ status:
 	@echo ""
 	@echo "Database:"
 	@docker ps --filter "name=crm-postgres" --format "table {{.Names}}\t{{.Status}}" | grep crm-postgres >/dev/null && echo "  ✅ Running" || echo "  ❌ Not running"
+
+# Daemon Management (macOS LaunchAgent)
+install-daemon:
+	@echo "📦 Installing Personal CRM backend as macOS LaunchAgent..."
+	@if [ ! -f scripts/run-backend-daemon.sh ]; then \
+		echo "❌ Error: scripts/run-backend-daemon.sh not found"; \
+		exit 1; \
+	fi
+	@if [ ! -f backend/bin/crm-api ]; then \
+		echo "Building backend binary first..."; \
+		make api-build; \
+	fi
+	@PROJECT_ROOT="$$(pwd)"; \
+	SCRIPT_PATH="$$PROJECT_ROOT/scripts/run-backend-daemon.sh"; \
+	PLIST_PATH="$$HOME/Library/LaunchAgents/com.personal-crm.backend.plist"; \
+	sed -e "s|PROJECT_ROOT_PLACEHOLDER|$$PROJECT_ROOT|g" \
+	    -e "s|SCRIPT_PATH_PLACEHOLDER|$$SCRIPT_PATH|g" \
+	    com.personal-crm.backend.plist.template > "$$PLIST_PATH"; \
+	launchctl unload "$$PLIST_PATH" 2>/dev/null || true; \
+	launchctl load "$$PLIST_PATH"; \
+	echo "✅ LaunchAgent installed and started!"
+	@echo ""
+	@echo "The backend will now:"
+	@echo "  • Run automatically at login"
+	@echo "  • Auto-restart if it crashes"
+	@echo "  • Run independently of terminal sessions"
+	@echo ""
+	@echo "Logs are available at:"
+	@echo "  • ~/Library/Logs/Personal-CRM/backend.log"
+	@echo "  • ~/Library/Logs/Personal-CRM/backend.error.log"
+
+uninstall-daemon:
+	@echo "🗑️  Uninstalling Personal CRM LaunchAgent..."
+	@PLIST_PATH="$$HOME/Library/LaunchAgents/com.personal-crm.backend.plist"; \
+	if [ -f "$$PLIST_PATH" ]; then \
+		launchctl unload "$$PLIST_PATH" 2>/dev/null || true; \
+		rm -f "$$PLIST_PATH"; \
+		echo "✅ LaunchAgent uninstalled"; \
+	else \
+		echo "ℹ️  LaunchAgent not found (may already be uninstalled)"; \
+	fi
+
+daemon-status:
+	@echo "📊 Personal CRM Daemon Status:"
+	@echo ""
+	@PLIST_PATH="$$HOME/Library/LaunchAgents/com.personal-crm.backend.plist"; \
+	if [ -f "$$PLIST_PATH" ]; then \
+		if launchctl list | grep -q "com.personal-crm.backend"; then \
+			echo "  ✅ LaunchAgent is loaded and running"; \
+		else \
+			echo "  ⚠️  LaunchAgent plist exists but is not loaded"; \
+		fi; \
+	else \
+		echo "  ❌ LaunchAgent not installed"; \
+	fi
+	@echo ""
+	@echo "Backend service (port 8080):"
+	@curl -s http://localhost:8080/health >/dev/null 2>&1 && echo "  ✅ Running" || echo "  ❌ Not running"
+
+daemon-logs:
+	@echo "📋 Personal CRM Daemon Logs:"
+	@echo ""
+	@LOG_DIR="$$HOME/Library/Logs/Personal-CRM"; \
+	if [ -f "$$LOG_DIR/backend.log" ]; then \
+		echo "=== Standard Output (last 50 lines) ==="; \
+		tail -n 50 "$$LOG_DIR/backend.log"; \
+	else \
+		echo "No standard output log found"; \
+	fi
+	@echo ""
+	@LOG_DIR="$$HOME/Library/Logs/Personal-CRM"; \
+	if [ -f "$$LOG_DIR/backend.error.log" ]; then \
+		echo "=== Error Output (last 50 lines) ==="; \
+		tail -n 50 "$$LOG_DIR/backend.error.log"; \
+	else \
+		echo "No error log found"; \
+	fi
+	@echo ""
+	@echo "Tip: Use 'tail -f ~/Library/Logs/Personal-CRM/backend.log' to follow logs live"
