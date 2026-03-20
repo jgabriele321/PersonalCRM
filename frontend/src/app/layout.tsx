@@ -28,6 +28,25 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
+        {/* Inline script to prevent ethereum redefinition errors from browser extensions */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                if (typeof window !== 'undefined') {
+                  const originalDefineProperty = Object.defineProperty;
+                  Object.defineProperty = function(obj, prop, descriptor) {
+                    if (prop === 'ethereum' && obj === window && window.ethereum) {
+                      // Silently ignore attempts to redefine window.ethereum
+                      return obj;
+                    }
+                    return originalDefineProperty.call(this, obj, prop, descriptor);
+                  };
+                }
+              })();
+            `,
+          }}
+        />
         <QueryProvider>
           {children}
         </QueryProvider>
