@@ -53,7 +53,12 @@ export function Navigation() {
           </div>
           
           <div className="flex items-center space-x-4">
-            {/* Time Acceleration Widget */}
+            <a
+              href="/"
+              className="inline-flex items-center px-5 py-2.5 rounded-lg text-base font-semibold text-white bg-purple-600 hover:bg-purple-700 transition-colors"
+            >
+              Prism DealFlow
+            </a>
             <TimeAccelerationWidget position="top-right" className="relative" />
             
             {/* Mobile menu button */}
